@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
+from torchvision.utils import save_image
 import numpy as np
 from collections import OrderedDict
 from PIL import Image
@@ -22,13 +23,15 @@ from glob import glob
 from time import time
 import argparse
 import logging
+import math
 import os
 
 from models import SiT_models
-from download import find_model
 from transport import create_transport, Sampler
 from diffusers.models import AutoencoderKL
 from train_utils import parse_transport_args
+from datasets.chexpert_dataset import CheXpertDataset
+from datasets.nih_chestxray_dataset import NIHChestXrayDataset
 import wandb_utils
 
 
@@ -62,6 +65,37 @@ def cleanup():
     End DDP training.
     """
     dist.destroy_process_group()
+
+
+def load_checkpoint(ckpt_path):
+    """
+    Loads a checkpoint for training. Accepts either a full training checkpoint
+    saved by this script ({"model", "ema", "opt", "args"}), or a bare model
+    state_dict (e.g. weights-only pretrained SiT-S/2 weights), in which case
+    the same weights are used to seed both the model and the EMA copy.
+    """
+    ckpt = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+    if "model" in ckpt:
+        return ckpt
+    return {"model": ckpt, "ema": ckpt}
+
+
+def load_finetune_weights(model, state_dict):
+    """
+    Loads a pretrained checkpoint for fine-tuning onto a new dataset, dropping
+    any tensors whose shape no longer matches the current model (e.g.
+    y_embedder.embedding_table when --num-classes differs from the checkpoint).
+    """
+    model_state = model.state_dict()
+    compatible = {
+        k: v for k, v in state_dict.items()
+        if k in model_state and v.shape == model_state[k].shape
+    }
+    skipped = [k for k in state_dict if k not in compatible]
+    if skipped:
+        print(f"Skipping {len(skipped)} incompatible checkpoint tensor(s) (shape mismatch): {skipped}")
+    model_state.update(compatible)
+    model.load_state_dict(model_state)
 
 
 def create_logger(logging_dir):
@@ -134,12 +168,14 @@ def main(args):
         experiment_dir = f"{args.results_dir}/{experiment_name}"  # Create an experiment folder
         checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
+        samples_dir = f"{experiment_dir}/samples"  # Stores locally-saved sample image grids
+        os.makedirs(samples_dir, exist_ok=True)
         logger = create_logger(experiment_dir)
         logger.info(f"Experiment directory created at {experiment_dir}")
 
-        entity = os.environ["ENTITY"]
-        project = os.environ["PROJECT"]
         if args.wandb:
+            entity = os.environ["ENTITY"]
+            project = os.environ["PROJECT"]
             wandb_utils.initialize(args, entity, experiment_name, project)
     else:
         logger = create_logger(None)
@@ -149,22 +185,27 @@ def main(args):
     latent_size = args.image_size // 8
     model = SiT_models[args.model](
         input_size=latent_size,
-        num_classes=args.num_classes
+        num_classes=args.num_classes,
+        class_dropout_prob=args.class_dropout_prob
     )
 
     # Note that parameter initialization is done within the SiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
 
     if args.ckpt is not None:
-        ckpt_path = args.ckpt
-        state_dict = find_model(ckpt_path)
-        model.load_state_dict(state_dict["model"])
-        ema.load_state_dict(state_dict["ema"])
-        opt.load_state_dict(state_dict["opt"])
-        args = state_dict["args"]
+        state_dict = load_checkpoint(args.ckpt)
+        if args.finetune:
+            # Fine-tuning onto a new dataset (e.g. CheXpert): load only the
+            # backbone weights, keep a fresh optimizer, and keep this run's args.
+            load_finetune_weights(model, state_dict["model"])
+            load_finetune_weights(ema, state_dict["ema"])
+        else:
+            # Resuming an interrupted run of the *same* training config.
+            model.load_state_dict(state_dict["model"])
+            ema.load_state_dict(state_dict["ema"])
 
     requires_grad(ema, False)
-    
+
     model = DDP(model.to(device), device_ids=[device])
     transport = create_transport(
         args.path_type,
@@ -172,13 +213,16 @@ def main(args):
         args.loss_weight,
         args.train_eps,
         args.sample_eps
-    )  # default: velocity; 
+    )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    if args.ckpt is not None and not args.finetune:
+        opt.load_state_dict(state_dict["opt"])
+        args = state_dict["args"]
 
     # Setup data:
     transform = transforms.Compose([
@@ -187,7 +231,12 @@ def main(args):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
-    dataset = ImageFolder(args.data_path, transform=transform)
+    if args.dataset == "chexpert":
+        dataset = CheXpertDataset(args.data_path, csv_name=args.csv_name, transform=transform)
+    elif args.dataset == "nih_chestxray":
+        dataset = NIHChestXrayDataset(args.data_path, transform=transform)
+    else:
+        dataset = ImageFolder(args.data_path, transform=transform)
     sampler = DistributedSampler(
         dataset,
         num_replicas=dist.get_world_size(),
@@ -218,7 +267,7 @@ def main(args):
     start_time = time()
 
     # Labels to condition the model with (feel free to change):
-    ys = torch.randint(1000, size=(local_batch_size,), device=device)
+    ys = torch.randint(args.num_classes, size=(local_batch_size,), device=device)
     use_cfg = args.cfg_scale > 1.0
     # Create sampling noise:
     n = ys.size(0)
@@ -227,7 +276,7 @@ def main(args):
     # Setup classifier-free guidance:
     if use_cfg:
         zs = torch.cat([zs, zs], 0)
-        y_null = torch.tensor([1000] * n, device=device)
+        y_null = torch.tensor([args.num_classes] * n, device=device)
         ys = torch.cat([ys, y_null], 0)
         sample_model_kwargs = dict(y=ys, cfg_scale=args.cfg_scale)
         model_fn = ema.forward_with_cfg
@@ -306,6 +355,14 @@ def main(args):
 
                 if args.wandb:
                     wandb_utils.log_image(out_samples, train_steps)
+                if rank == 0:
+                    sample_path = f"{samples_dir}/{train_steps:07d}.png"
+                    save_image(
+                        out_samples, sample_path,
+                        nrow=round(math.sqrt(out_samples.size(0))),
+                        normalize=True, value_range=(-1, 1)
+                    )
+                    logger.info(f"Saved sample grid to {sample_path}")
                 logging.info("Generating EMA samples done.")
 
     model.eval()  # important! This disables randomized embedding dropout
@@ -319,10 +376,17 @@ if __name__ == "__main__":
     # Default args here will train SiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-path", type=str, required=True)
+    parser.add_argument("--dataset", type=str, choices=["imagenet", "chexpert", "nih_chestxray"], default="imagenet",
+                        help="'chexpert' and 'nih_chestxray' both train unconditionally; 'nih_chestxray' points at "
+                             "the smaller Kaggle NIH ChestX-ray14 mirror, handy for sanity-checking the pipeline "
+                             "before running on the much larger CheXpert dataset")
+    parser.add_argument("--csv-name", type=str, default="train.csv",
+                        help="CSV file to read image paths from when --dataset chexpert (e.g. train.csv or valid.csv)")
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(SiT_models.keys()), default="SiT-XL/2")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=1000)
+    parser.add_argument("--class-dropout-prob", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
@@ -335,7 +399,18 @@ if __name__ == "__main__":
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--ckpt", type=str, default=None,
                         help="Optional path to a custom SiT checkpoint")
+    parser.add_argument("--finetune", action="store_true",
+                        help="Load only backbone weights from --ckpt (fresh optimizer, keep this run's args) "
+                             "instead of resuming the exact training state. Use this to fine-tune a pretrained "
+                             "checkpoint onto a new dataset, e.g. --dataset chexpert.")
 
     parse_transport_args(parser)
     args = parser.parse_args()
+
+    if args.dataset in ("chexpert", "nih_chestxray"):
+        # Neither dataset's labels are used here: train fully unconditionally.
+        args.num_classes = 1
+        args.class_dropout_prob = 0.0
+        args.cfg_scale = 1.0
+
     main(args)
