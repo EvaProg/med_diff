@@ -232,7 +232,8 @@ def main(args):
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
     if args.dataset == "chexpert":
-        dataset = CheXpertDataset(args.data_path, csv_name=args.csv_name, transform=transform)
+        dataset = CheXpertDataset(args.data_path, csv_name=args.csv_name, transform=transform,
+                                   frontal_only=args.frontal_only)
     elif args.dataset == "nih_chestxray":
         dataset = NIHChestXrayDataset(args.data_path, transform=transform)
     else:
@@ -267,7 +268,9 @@ def main(args):
     start_time = time()
 
     # Labels to condition the model with (feel free to change):
-    ys = torch.randint(args.num_classes, size=(local_batch_size,), device=device)
+    n_total_samples = 26
+    n_samples = n_total_samples // dist.get_world_size()
+    ys = torch.randint(args.num_classes, size=(n_samples,), device=device) #changed local_batch_size to 32
     use_cfg = args.cfg_scale > 1.0
     # Create sampling noise:
     n = ys.size(0)
@@ -350,7 +353,7 @@ def main(args):
                     if use_cfg: #remove null samples
                         samples, _ = samples.chunk(2, dim=0)
                     samples = vae.decode(samples / 0.18215).sample
-                    out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device)
+                    out_samples = torch.zeros((n_total_samples, 3, args.image_size, args.image_size), device=device)
                     dist.all_gather_into_tensor(out_samples, samples)
 
                 if args.wandb:
@@ -382,6 +385,8 @@ if __name__ == "__main__":
                              "before running on the much larger CheXpert dataset")
     parser.add_argument("--csv-name", type=str, default="train.csv",
                         help="CSV file to read image paths from when --dataset chexpert (e.g. train.csv or valid.csv)")
+    parser.add_argument("--frontal-only", action="store_true",
+                        help="When --dataset chexpert, skip lateral-view images and keep only frontal views.")
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(SiT_models.keys()), default="SiT-XL/2")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)

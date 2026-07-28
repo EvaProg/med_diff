@@ -1,0 +1,5 @@
+Image folder 1: /data/evan/MEDICAL_GENERATED_DATA/NIH_CXR_S2_100E_15K/SiT-S-2-0046000-cfg-1.0-32-ODE-250-dopri5
+Image folder 2: /data/evan/NIH_CXR/TEST
+Date: Fri Jul 17 07:41:20 AM EDT 2026
+
+CMMD: 0.257

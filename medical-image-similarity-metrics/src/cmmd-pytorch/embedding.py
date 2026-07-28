@@ -36,7 +36,15 @@ class ClipEmbeddingModel:
     def __init__(self):
         self.image_processor = CLIPImageProcessor.from_pretrained(_CLIP_MODEL_NAME)
 
-        self._model = CLIPVisionModelWithProjection.from_pretrained(_CLIP_MODEL_NAME).eval()
+        try:
+            self._model = CLIPVisionModelWithProjection.from_pretrained(_CLIP_MODEL_NAME).eval()
+        except ValueError:
+            # transformers refuses to torch.load non-safetensors checkpoints unless torch>=2.6
+            # (CVE-2025-32434). The `main` revision of this repo only has a .bin checkpoint, but
+            # the HF safetensors-conversion bot's PR adds a .safetensors one; use that instead.
+            self._model = CLIPVisionModelWithProjection.from_pretrained(
+                _CLIP_MODEL_NAME, revision="refs/pr/20"
+            ).eval()
         if _CUDA_AVAILABLE:
             self._model = self._model.cuda()
 

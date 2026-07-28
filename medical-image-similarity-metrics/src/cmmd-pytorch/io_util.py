@@ -57,7 +57,9 @@ class CMMDDataset(Dataset):
         return im.resize((size, size), resample=Image.BICUBIC)  # pytype: disable=module-attr
 
     def _read_image(self, path, size):
-        im = Image.open(path)
+        # Normalize to RGB so all images have 3 channels; some PNGs are RGBA,
+        # grayscale, or palette mode, which would otherwise break batch stacking.
+        im = Image.open(path).convert("RGB")
         if size > 0:
             im = self._center_crop_and_resize(im, size)
         return np.asarray(im).astype(np.float32)

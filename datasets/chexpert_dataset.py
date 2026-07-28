@@ -22,7 +22,7 @@ class CheXpertDataset(Dataset):
     (e.g. the extracted "CheXpert-v1.0-small" folder). The CSV's Path column is
     rooted at that same folder name, so it's stripped if necessary.
     """
-    def __init__(self, root, csv_name="train.csv", transform=None):
+    def __init__(self, root, csv_name="train.csv", transform=None, frontal_only=True):
         self.transform = transform
         csv_path = os.path.join(root, csv_name)
         if not os.path.isfile(csv_path):
@@ -35,6 +35,8 @@ class CheXpertDataset(Dataset):
         with open(csv_path, newline="") as f:
             for row in csv.DictReader(f):
                 rel_path = row["Path"]
+                if frontal_only and "frontal" not in rel_path:
+                    continue
                 candidate = os.path.join(root, rel_path)
                 if not os.path.isfile(candidate):
                     # CSV paths include the dataset's own top-level folder name;
