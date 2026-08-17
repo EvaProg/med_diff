@@ -219,7 +219,7 @@ def main(args):
     logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0)
     if args.ckpt is not None and not args.finetune:
         opt.load_state_dict(state_dict["opt"])
         args = state_dict["args"]
@@ -393,6 +393,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--class-dropout-prob", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=1400)
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the AdamW optimizer")
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
