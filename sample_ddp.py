@@ -163,7 +163,7 @@ def main(mode, args):
         # Setup classifier-free guidance:
         if using_cfg:
             z = torch.cat([z, z], 0)
-            y_null = torch.tensor([1000] * n, device=device)
+            y_null = torch.tensor([args.num_classes] * n, device=device)
             y = torch.cat([y, y_null], 0)
             model_kwargs = dict(y=y, cfg_scale=args.cfg_scale)
             model_fn = model.forward_with_cfg
@@ -213,11 +213,13 @@ if __name__ == "__main__":
     parser.add_argument("--per-proc-batch-size", type=int, default=4)
     parser.add_argument("--num-fid-samples", type=int, default=50_000)
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
-    parser.add_argument("--num-classes", type=int, default=1000)
+    parser.add_argument("--num-classes", type=int, default=1000,
+                        help="Must match the value used during training (train.py forces 1 for "
+                             "--dataset nih_chestxray, 14 for --dataset chexpert), since it determines "
+                             "the size of the saved label-embedding table.")
     parser.add_argument("--class-dropout-prob", type=float, default=0.1,
-                        help="Must match the value used during training (train.py forces 0.0 for "
-                             "--dataset chexpert/nih_chestxray), since it determines the size of the "
-                             "saved label-embedding table.")
+                        help="Must be > 0 to match a checkpoint trained with classifier-free guidance "
+                             "(adds one extra null-class row to the label-embedding table).")
     parser.add_argument("--cfg-scale",  type=float, default=1.0)
     parser.add_argument("--num-sampling-steps", type=int, default=250)
     parser.add_argument("--global-seed", type=int, default=0)

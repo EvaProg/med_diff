@@ -1,0 +1,48 @@
+{
+  "No Finding": {
+    "Enlarged Cardiomediastinum": 0.6049476861953735,
+    "Cardiomegaly": 0.6095249056816101,
+    "Lung Opacity": 0.6662112474441528,
+    "Lung Lesion": 0.629619300365448,
+    "Edema": 0.6239491701126099,
+    "Consolidation": 0.6214086413383484,
+    "Pneumonia": 0.6341947913169861,
+    "Atelectasis": 0.6557743549346924,
+    "Pneumothorax": 0.5691463947296143,
+    "Effusion": 0.6307057738304138,
+    "Fracture": 0.6315473318099976
+  },
+  "Enlarged Cardiomediastinum": {
+    "Enlarged Cardiomediastinum": 0.6408528089523315
+  },
+  "Cardiomegaly": {
+    "Cardiomegaly": 0.6546217203140259
+  },
+  "Lung Opacity": {
+    "Lung Opacity": 0.7105067372322083
+  },
+  "Lung Lesion": {
+    "Lung Lesion": 0.6472575664520264
+  },
+  "Edema": {
+    "Edema": 0.700319230556488
+  },
+  "Consolidation": {
+    "Consolidation": 0.687781572341919
+  },
+  "Pneumonia": {
+    "Pneumonia": 0.654183566570282
+  },
+  "Atelectasis": {
+    "Atelectasis": 0.6981664896011353
+  },
+  "Pneumothorax": {
+    "Pneumothorax": 0.6078516840934753
+  },
+  "Pleural Effusion": {
+    "Effusion": 0.6828246116638184
+  },
+  "Fracture": {
+    "Fracture": 0.6481029391288757
+  }
+}

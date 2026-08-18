@@ -30,7 +30,7 @@ from models import SiT_models
 from transport import create_transport, Sampler
 from diffusers.models import AutoencoderKL
 from train_utils import parse_transport_args
-from datasets.chexpert_dataset import CheXpertDataset
+from datasets.chexpert_dataset import CheXpertDataset, CHEXPERT_CLASSES
 from datasets.nih_chestxray_dataset import NIHChestXrayDataset
 import wandb_utils
 
@@ -162,9 +162,12 @@ def main(args):
     if rank == 0:
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         experiment_index = len(glob(f"{args.results_dir}/*"))
-        model_string_name = args.model.replace("/", "-")  # e.g., SiT-XL/2 --> SiT-XL-2 (for naming folders)
-        experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
-                        f"{args.path_type}-{args.prediction}-{args.loss_weight}"
+        if args.exp_name:
+            experiment_name = f"{experiment_index:03d}-{args.exp_name}"
+        else:
+            model_string_name = args.model.replace("/", "-")  # e.g., SiT-XL/2 --> SiT-XL-2 (for naming folders)
+            experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
+                            f"{args.path_type}-{args.prediction}-{args.loss_weight}"
         experiment_dir = f"{args.results_dir}/{experiment_name}"  # Create an experiment folder
         checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -255,6 +258,8 @@ def main(args):
         drop_last=True
     )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
+    if args.dataset == "chexpert":
+        logger.info(f"CheXpert class legend: {list(enumerate(CHEXPERT_CLASSES))}")
 
     # Prepare models for training:
     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
@@ -380,14 +385,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--dataset", type=str, choices=["imagenet", "chexpert", "nih_chestxray"], default="imagenet",
-                        help="'chexpert' and 'nih_chestxray' both train unconditionally; 'nih_chestxray' points at "
-                             "the smaller Kaggle NIH ChestX-ray14 mirror, handy for sanity-checking the pipeline "
-                             "before running on the much larger CheXpert dataset")
+                        help="'chexpert' trains class-conditionally on CheXpert's single-label pathology "
+                             "classes (see datasets/chexpert_dataset.py); 'nih_chestxray' trains unconditionally "
+                             "on the smaller Kaggle NIH ChestX-ray14 mirror, handy for sanity-checking the "
+                             "pipeline before running on the much larger CheXpert dataset")
     parser.add_argument("--csv-name", type=str, default="train.csv",
                         help="CSV file to read image paths from when --dataset chexpert (e.g. train.csv or valid.csv)")
     parser.add_argument("--frontal-only", action="store_true",
                         help="When --dataset chexpert, skip lateral-view images and keep only frontal views.")
     parser.add_argument("--results-dir", type=str, default="results")
+    parser.add_argument("--exp-name", type=str, default=None,
+                        help="Custom name for the results subfolder, e.g. 'chexpert-conditional-run1' "
+                             "(default: auto-numbered '000-SiT-S-2-Linear-velocity-None' based on "
+                             "--model/--path-type/--prediction/--loss-weight). Still prefixed with a "
+                             "zero-padded run index either way, to avoid collisions across repeated runs.")
     parser.add_argument("--model", type=str, choices=list(SiT_models.keys()), default="SiT-XL/2")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=1000)
@@ -413,10 +424,14 @@ if __name__ == "__main__":
     parse_transport_args(parser)
     args = parser.parse_args()
 
-    if args.dataset in ("chexpert", "nih_chestxray"):
-        # Neither dataset's labels are used here: train fully unconditionally.
+    if args.dataset == "nih_chestxray":
+        # This dataset's labels aren't used: train fully unconditionally.
         args.num_classes = 1
         args.class_dropout_prob = 0.0
         args.cfg_scale = 1.0
+    elif args.dataset == "chexpert":
+        # Single-label pathology conditioning: num_classes is a fixed property
+        # of CheXpertDataset's label collapsing, not a free hyperparameter.
+        args.num_classes = len(CHEXPERT_CLASSES)
 
     main(args)
